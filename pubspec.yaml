@@ -54,7 +54,7 @@ dependencies:
   pdf_render: ^1.4.10
   flutter_svg: ^2.0.10+1
   syncfusion_flutter_pdf: ^25.2.7
-  esc_pos_printer: ^4.1.0
+  # esc_pos_printer: ^4.1.0
 
 #flutter_launcher_icons:
 # android: "launcher_icon"
@@ -82,9 +82,10 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # To add assets to your application, add an assets section, like this:
+  # ตรวจสอบว่ามี assets section
   assets:
     - assets/
+    - assets/page_1x.png  # เพิ่มบรรทัดนี้เฉพาะเจาะจง
     - assets/font/Sarabun-Thin.ttf
     - assets/font/Sarabun-ExtraBoldItalic.ttf
     - assets/font/Kannaka.ttf

@@ -39,130 +39,25 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> _printLargeImage() async {
     setState(() {
       _isPrinting = true;
-      _status = 'Processing large image...';
+      _status = 'Loading image from Dart...';
     });
 
     try {
-      // 1. Load and decode image
-      final data = await rootBundle.load('assets/LOGO.png');
-      final originalImage = img.decodeImage(data.buffer.asUint8List());
-      if (originalImage == null) throw Exception('Failed to decode image');
+      // 1. Load image data ใน Dart
+      final ByteData data = await rootBundle.load('assets/page_1x.png');
+      final Uint8List imageBytes = data.buffer.asUint8List();
 
-      setState(() => _status = 'Resizing image...');
+      setState(() => _status = 'Sending image data to Java...');
 
-      // 2. Calculate aspect ratio and resize proportionally
-      final double aspectRatio = originalImage.width / originalImage.height;
-      final int targetWidth = 500;
-      final int targetHeight = (targetWidth / aspectRatio * 0.4).round();
-
-      final resizedImage = img.copyResize(
-        originalImage,
-        width: targetWidth,
-        height: targetHeight,
-        interpolation: img.Interpolation.linear,
-      );
-
-      setState(() => _status = 'Converting to binary...');
-
-      // 3. Pre-process ทั้งรูปเป็น binary array (เร็วกว่ามาก!)
-      final width = resizedImage.width;
-      final height = resizedImage.height;
-      final binaryData = List<int>.filled(width * height, 0);
-
-      // แปลงเป็น binary ก่อน (single pass)
-      for (int i = 0; i < width * height; i++) {
-        final y = i ~/ width;
-        final x = i % width;
-        final pixel = resizedImage.getPixel(x, y);
-        binaryData[i] = img.getLuminance(pixel) < 128 ? 1 : 0;
-      }
-
-      setState(() => _status = 'Building print data...');
-
-      // Initialize printer
-      await _channel.invokeMethod('printBytes', {
+      // 2. ส่งข้อมูลรูปภาพไปให้ Java
+      final result = await _channel.invokeMethod('printImageFromBytes', {
+        'imageData': imageBytes, // ส่งข้อมูลรูปภาพจริง
         'portPath': '/dev/ttyS3',
-        'data': Uint8List.fromList([0x1B, 0x40, 0x1B, 0x33, 0x00]),
       });
 
-      // 4. Build และส่งข้อมูลแบบ streaming (เร็วกว่า)
-      const int maxBufferSize = 800;
-      List<int> buffer = [];
-      int totalRows = (height / 8).ceil();
-      int currentRow = 0;
-
-      for (int y = 0; y < height; y += 8) {
-        final rowData = <int>[];
-
-        // Left half
-        rowData.addAll([0x1B, 0x24, 0x00, 0x00, 0x1B, 0x2A, 0x01, 250, 0]);
-        for (int x = 0; x < 250; x++) {
-          int byte = 0;
-          for (int bit = 0; bit < 8; bit++) {
-            final pxY = y + bit;
-            if (pxY < height && binaryData[pxY * width + x] == 1) {
-              byte |= (1 << (7 - bit));
-            }
-          }
-          rowData.add(byte);
-        }
-
-        // Right half
-        rowData.addAll([0x1B, 0x24, 250, 0x00, 0x1B, 0x2A, 0x01, 250, 0]);
-        for (int x = 250; x < 500 && x < width; x++) {
-          int byte = 0;
-          for (int bit = 0; bit < 8; bit++) {
-            final pxY = y + bit;
-            if (pxY < height && binaryData[pxY * width + x] == 1) {
-              byte |= (1 << (7 - bit));
-            }
-          }
-          rowData.add(byte);
-        }
-        rowData.add(0x0A);
-
-        // เช็ค buffer size
-        if (buffer.length + rowData.length > maxBufferSize) {
-          if (buffer.isNotEmpty) {
-            await _channel.invokeMethod('printBytes', {
-              'portPath': '/dev/ttyS3',
-              'data': Uint8List.fromList(buffer),
-            });
-            buffer.clear();
-            // ลด delay
-            await Future.delayed(const Duration(milliseconds: 5));
-          }
-        }
-
-        buffer.addAll(rowData);
-        currentRow++;
-
-        // Update progress น้อยลง
-        if (currentRow % 20 == 0) {
-          setState(() => _status =
-              'Printing... ${((currentRow / totalRows) * 100).round()}%');
-        }
-      }
-
-      // ส่งข้อมูลที่เหลือ
-      if (buffer.isNotEmpty) {
-        await _channel.invokeMethod('printBytes', {
-          'portPath': '/dev/ttyS3',
-          'data': Uint8List.fromList(buffer),
-        });
-      }
-
-      // Final reset
-      await Future.delayed(const Duration(milliseconds: 30));
-      await _channel.invokeMethod('printBytes', {
-        'portPath': '/dev/ttyS3',
-        'data': Uint8List.fromList([0x1B, 0x33, 0x18, 0x1B, 0x40]),
-      });
-
-      setState(() => _status = 'Large image printed successfully!');
+      setState(() => _status = result.toString());
     } catch (e) {
-      setState(() => _status = 'Print error: $e');
-      debugPrint('Print error: $e');
+      setState(() => _status = 'Error: $e');
     } finally {
       setState(() => _isPrinting = false);
     }
