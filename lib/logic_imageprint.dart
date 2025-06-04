@@ -1,6 +1,9 @@
 import 'dart:typed_data';
+import 'dart:io'; // ✅ เพิ่มสำหรับ File
+import 'dart:ui' as ui; // ✅ เพิ่มสำหรับ Image
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart'; // ✅ เพิ่มสำหรับ RenderRepaintBoundary
 import 'package:intl/intl.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:printing/printing.dart';
@@ -84,6 +87,11 @@ class ImagePrintLogic extends ChangeNotifier {
 
       // กำหนดขนาดหน้ากระดาษแบบไดนามิก
       document.pageSettings.size = Size(pageWidth, totalHeight);
+      document.pageSettings.margins.all = 0.0;
+      document.pageSettings.margins.left = 0;
+      document.pageSettings.margins.right = 0;
+      document.pageSettings.margins.top = 0;
+      document.pageSettings.margins.bottom = 0;
 
       final page = document.pages.add();
 
@@ -308,6 +316,250 @@ class ImagePrintLogic extends ChangeNotifier {
       return null;
     } finally {
       _updateState(_status, processing: false);
+    }
+  }
+
+  /// 🎯 Universal Print Function - รับ Uint8List ไปพิมพ์เลย
+  Future<bool> printImageBytes({
+    required Uint8List imageBytes,
+    String portPath = '/dev/ttyS3',
+    String method =
+        'printImageFromBytes', // 'printImageFromBytes' or 'printImageFast'
+  }) async {
+    try {
+      print(
+          '🔍 DEBUG: Starting printImageBytes, size: ${imageBytes.length} bytes');
+      _updateState('กำลังส่งไปพิมพ์...', processing: true);
+
+      const platform = MethodChannel('com.example.unittest/printer');
+
+      final result = await platform.invokeMethod(method, {
+        'imageData': imageBytes,
+        'portPath': portPath,
+      });
+
+      print('✅ Print result: $result');
+      _updateState('พิมพ์สำเร็จ: $result');
+      return true;
+    } catch (e) {
+      print('🔴 ERROR: $e');
+      _updateState('เกิดข้อผิดพลาดในการพิมพ์: $e');
+      return false;
+    } finally {
+      _updateState(_status, processing: false);
+    }
+  }
+
+  /// 📁 Print Image from File Path
+  Future<bool> printImageFromPath({
+    required String imagePath,
+    String portPath = '/dev/ttyS3',
+    String method = 'printImageFromBytes',
+  }) async {
+    try {
+      print('🔍 DEBUG: Loading image from path: $imagePath');
+      _updateState('กำลังโหลดรูปภาพ...', processing: true);
+
+      Uint8List imageBytes;
+
+      if (imagePath.startsWith('assets/')) {
+        // Load from assets
+        final ByteData data = await rootBundle.load(imagePath);
+        imageBytes = data.buffer.asUint8List();
+      } else {
+        // Load from file system
+        final File file = File(imagePath);
+        if (!await file.exists()) {
+          throw Exception('File not found: $imagePath');
+        }
+        imageBytes = await file.readAsBytes();
+      }
+
+      print('✅ Image loaded, size: ${imageBytes.length} bytes');
+
+      // Use universal print function
+      return await printImageBytes(
+        imageBytes: imageBytes,
+        portPath: portPath,
+        method: method,
+      );
+    } catch (e) {
+      print('🔴 ERROR: $e');
+      _updateState('เกิดข้อผิดพลาดในการโหลดรูป: $e');
+      return false;
+    }
+  }
+
+  /// 🖼️ Print Image from Widget (Screenshot)
+  Future<bool> printImageFromWidget({
+    required Widget widget,
+    Size size = const Size(500, 600),
+    String portPath = '/dev/ttyS3',
+    String method = 'printImageFromBytes',
+  }) async {
+    try {
+      print('🔍 DEBUG: Creating image from widget');
+      _updateState('กำลังสร้างรูปจาก Widget...', processing: true);
+
+      // ✅ ใช้วิธีใหม่ที่ทันสมัยกว่า
+      final GlobalKey repaintBoundaryKey = GlobalKey();
+
+      // สร้าง Widget พร้อม RepaintBoundary
+      final captureWidget = RepaintBoundary(
+        key: repaintBoundaryKey,
+        child: Container(
+          width: size.width,
+          height: size.height,
+          color: Colors.white,
+          child: widget,
+        ),
+      );
+
+      // สร้าง temporary app เพื่อ render widget
+      final binding = WidgetsFlutterBinding.ensureInitialized();
+
+      // สร้าง render tree
+      final renderView = RenderView(
+        configuration: ViewConfiguration(
+          size: size,
+          devicePixelRatio: 1.0,
+        ),
+        view: binding.platformDispatcher.views.first,
+      );
+
+      final pipelineOwner = PipelineOwner();
+      final buildOwner = BuildOwner(focusManager: FocusManager());
+
+      pipelineOwner.rootNode = renderView;
+      renderView.prepareInitialFrame();
+
+      final rootElement = captureWidget.createElement();
+      buildOwner.buildScope(rootElement, () {
+        rootElement.mount(null, null);
+      });
+
+      buildOwner.buildScope(rootElement, () {
+        rootElement.rebuild();
+      });
+
+      pipelineOwner.flushLayout();
+      pipelineOwner.flushCompositingBits();
+      pipelineOwner.flushPaint();
+
+      // Capture เป็นรูปภาพ
+      final RenderRepaintBoundary boundary = repaintBoundaryKey.currentContext!
+          .findRenderObject() as RenderRepaintBoundary;
+
+      final ui.Image image = await boundary.toImage(pixelRatio: 1.0);
+      final ByteData? byteData =
+          await image.toByteData(format: ui.ImageByteFormat.png);
+
+      if (byteData == null) {
+        throw Exception('Failed to convert widget to image');
+      }
+
+      final Uint8List imageBytes = byteData.buffer.asUint8List();
+      print('✅ Widget image created, size: ${imageBytes.length} bytes');
+
+      // Use universal print function
+      return await printImageBytes(
+        imageBytes: imageBytes,
+        portPath: portPath,
+        method: method,
+      );
+    } catch (e) {
+      print('🔴 ERROR: $e');
+      _updateState('เกิดข้อผิดพลาดในการสร้างรูปจาก Widget: $e');
+      return false;
+    }
+  }
+
+  /// 📄 Print PDF as Image (using Java conversion)
+  Future<bool> printPdfAsImage({
+    required Uint8List pdfBytes,
+    String portPath = '/dev/ttyS3',
+    int dpi = 150,
+  }) async {
+    try {
+      print(
+          '🔍 DEBUG: Sending PDF to Java for conversion, size: ${pdfBytes.length} bytes');
+      _updateState('กำลังส่ง PDF ไป Java แปลงเป็นรูป...', processing: true);
+
+      const platform = MethodChannel('com.example.unittest/printer');
+
+      final result = await platform.invokeMethod('printPdfAsImage', {
+        'pdfData': pdfBytes,
+        'portPath': portPath,
+        'dpi': dpi,
+      });
+
+      print('✅ PDF print result: $result');
+      _updateState('พิมพ์ PDF สำเร็จ: $result');
+      return true;
+    } catch (e) {
+      print('🔴 ERROR: $e');
+      _updateState('เกิดข้อผิดพลาดในการพิมพ์ PDF: $e');
+      return false;
+    } finally {
+      _updateState(_status, processing: false);
+    }
+  }
+
+  /// 🎨 Print Receipt from JSON (Flutter PDF → Image → Print)
+  Future<bool> printReceiptFromJson({
+    required Map<String, dynamic> jsonData,
+    String portPath = '/dev/ttyS3',
+    String method = 'printImageFromBytes',
+  }) async {
+    try {
+      print('🔍 DEBUG: Creating receipt from JSON');
+
+      // Create image from JSON using existing method
+      final Uint8List? imageBytes = await createReceiptImage(jsonData);
+
+      if (imageBytes == null) {
+        throw Exception('Failed to create receipt image');
+      }
+
+      // Use universal print function
+      return await printImageBytes(
+        imageBytes: imageBytes,
+        portPath: portPath,
+        method: method,
+      );
+    } catch (e) {
+      print('🔴 ERROR: $e');
+      _updateState('เกิดข้อผิดพลาดในการสร้างใบเสร็จ: $e');
+      return false;
+    }
+  }
+
+  /// 📱 Print Receipt from JSON (Java PDF → Image → Print)
+  Future<bool> printReceiptFromJsonViaJava({
+    required Map<String, dynamic> jsonData,
+    String portPath = '/dev/ttyS3',
+    int dpi = 150,
+  }) async {
+    try {
+      print('🔍 DEBUG: Creating PDF for Java conversion');
+
+      // Create PDF from JSON using existing method
+      final Uint8List? pdfBytes = await createReceiptPDF(jsonData);
+
+      if (pdfBytes == null) {
+        throw Exception('Failed to create PDF');
+      }
+
+      // Use Java PDF conversion
+      return await printPdfAsImage(
+        pdfBytes: pdfBytes,
+        portPath: portPath,
+        dpi: dpi,
+      );
+    } catch (e) {
+      print('🔴 ERROR: $e');
+      _updateState('เกิดข้อผิดพลาดในการสร้าง PDF: $e');
+      return false;
     }
   }
 }

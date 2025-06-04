@@ -74,13 +74,43 @@ class _MyHomePageState extends State<MyHomePage> {
   Future<void> _printWithPDFConversion() async {
     setState(() {
       _isPrinting = true;
-      _status = 'Creating PDF...';
+      _status = 'Printing image from file first...';
     });
 
     try {
-      print('🔍 DEBUG: Starting PDF creation...');
+      print('🔍 DEBUG: Starting print image from file...');
 
-      // 1. สร้าง PDF ใน Dart
+      // 🎯 1. โหลดรูปจากไฟล์เป็น bytes ก่อน
+      setState(() => _status = 'Loading image from assets...');
+
+      final ByteData data = await rootBundle.load('assets/LOGOq.jpg');
+      final Uint8List imageBytes = data.buffer.asUint8List();
+
+      print('✅ Image loaded, size: ${imageBytes.length} bytes');
+
+      // 2. ส่ง bytes ไปพิมพ์ (ไม่ใช่ path)
+      setState(() => _status = 'Sending image bytes to printer...');
+
+      bool imageSuccess = await logic.printImageBytes(
+        imageBytes: imageBytes,
+        portPath: '/dev/ttyS3',
+        method: 'printImageFromBytes',
+      );
+
+      if (!imageSuccess) {
+        throw Exception('Failed to print image from file');
+      }
+
+      print('✅ Image from file printed successfully');
+      setState(() => _status = 'Image printed! Now creating PDF...');
+
+      // เดี๋ยวสักครู่ก่อนทำต่อ
+      await Future.delayed(Duration(seconds: 2));
+
+      // 🎯 2. จากนั้นค่อยสร้าง PDF และพิมพ์ผ่าน Java
+      print('🔍 DEBUG: Starting PDF creation...');
+      setState(() => _status = 'Creating PDF...');
+
       final Uint8List? pdfBytes = await logic.createReceiptPDF(jsonData);
 
       if (pdfBytes == null) {
@@ -88,18 +118,18 @@ class _MyHomePageState extends State<MyHomePage> {
       }
 
       print('🔍 DEBUG: PDF created, size: ${pdfBytes.length} bytes');
-
       setState(() => _status = 'Converting PDF to image in Java...');
 
-      // 2. ส่ง PDF ไป Java แปลงเป็นรูปและพิมพ์ (ไม่ส่ง paperWidth)
+      // 3. ส่ง PDF ไป Java แปลงเป็นรูปและพิมพ์
       final result = await _channel.invokeMethod('printPdfAsImage', {
-        'pdfData': pdfBytes, // ✅ ส่ง PDF bytes
+        'pdfData': pdfBytes,
         'portPath': '/dev/ttyS3',
-        'dpi': 150, // ✅ กำหนด DPI
-        // ❌ ลบ 'paperWidth' ออก - ให้ Java ใช้ขนาดจริงของ PDF
+        'dpi': 150,
       });
 
-      setState(() => _status = 'Print result: $result');
+      print('✅ PDF print result: $result');
+      setState(
+          () => _status = 'Both completed! Image from file + PDF via Java');
     } catch (e) {
       print('🔴 ERROR: $e');
       setState(() => _status = 'Error: $e');
