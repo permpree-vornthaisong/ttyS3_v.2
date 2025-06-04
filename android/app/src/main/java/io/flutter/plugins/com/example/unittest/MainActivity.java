@@ -15,6 +15,8 @@ import java.io.InputStream;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.pdf.PdfRenderer;
+import android.os.ParcelFileDescriptor;
 
 public class MainActivity extends FlutterActivity {
 
@@ -72,7 +74,6 @@ public class MainActivity extends FlutterActivity {
                     }
                     break;
 
-                // เพิ่ม case ใหม่นี้
                 case "printImageFast":
                     String assetPath = call.argument("assetPath");
                     portPath = call.argument("portPath");
@@ -92,6 +93,23 @@ public class MainActivity extends FlutterActivity {
                     } else {
                         result.error("PROTOCOL_ERROR", "Failed to send START_ignore_protocol", null);
                     }
+                    break;
+
+                // ✅ แก้ไขใน switch case ของ PRINTER_CHANNEL
+                case "printPdfAsImage":
+                    byte[] pdfData = call.argument("pdfData");
+                    portPath = call.argument("portPath");
+                    Integer dpi = call.argument("dpi");
+                    // ❌ ลบ paperWidth parameter ออก
+                    
+                    if (pdfData == null || portPath == null) {
+                        result.error("INVALID_ARGUMENTS", "PDF data and port path required", null);
+                        return;
+                    }
+                    
+                    printPdfAsImage(pdfData, portPath, 
+                                   dpi != null ? dpi : 150, 
+                                   result);
                     break;
 
                 default:
@@ -142,7 +160,7 @@ public class MainActivity extends FlutterActivity {
     private void sendStartIgnoreProtocolOnStartup() {
         new Thread(() -> {
             try {
-                Thread.sleep(1000); // Wait 1 second after app start
+                Thread.sleep(1000);
                 Log.d(TAG, "Sending START_ignore_protocol on app startup...");
                 boolean success = commandSender.sendStartIgnoreProtocol();
                 if (success) {
@@ -156,7 +174,6 @@ public class MainActivity extends FlutterActivity {
         }).start();
     }
 
-    // เพิ่ม method ใหม่นี้
     private void printImageFast(String assetPath, String portPath, MethodChannel.Result result) {
         new Thread(() -> {
             try {
@@ -405,8 +422,161 @@ public class MainActivity extends FlutterActivity {
         }).start();
     }
 
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
+    // ✅ แก้ไข method printPdfAsImage ให้เหมือน printImageFromBytes เป๊ะๆ
+    private void printPdfAsImage(byte[] pdfData, String portPath, int dpi, MethodChannel.Result result) {
+        new Thread(() -> {
+            try {
+                // 1. บันทึก PDF ลงไฟล์ชั่วคราว
+                File tempPdfFile = new File(getCacheDir(), "temp_receipt.pdf");
+                try (FileOutputStream fos = new FileOutputStream(tempPdfFile)) {
+                    fos.write(pdfData);
+                    fos.flush();
+                }
+
+                // 2. เปิด PDF ด้วย PdfRenderer
+                ParcelFileDescriptor parcelFileDescriptor = ParcelFileDescriptor.open(
+                    tempPdfFile, ParcelFileDescriptor.MODE_READ_ONLY);
+                PdfRenderer pdfRenderer = new PdfRenderer(parcelFileDescriptor);
+
+                if (pdfRenderer.getPageCount() == 0) {
+                    result.error("PDF_ERROR", "PDF has no pages", null);
+                    return;
+                }
+
+                // 3. แปลงหน้าแรกเป็น Bitmap
+                PdfRenderer.Page page = pdfRenderer.openPage(0);
+                
+                // แปลง PDF เป็น Bitmap ตามขนาดจริง
+                float scale = dpi / 72f; // PDF default is 72 DPI
+                int originalWidth = (int) (page.getWidth() * scale);
+                int originalHeight = (int) (page.getHeight() * scale);
+
+                Bitmap originalBitmap = Bitmap.createBitmap(originalWidth, originalHeight, Bitmap.Config.ARGB_8888);
+                originalBitmap.eraseColor(Color.WHITE); // พื้นหลังสีขาว
+                
+                // Render PDF page ลง Bitmap
+                page.render(originalBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT);
+                
+                // ปิด PDF resources
+                page.close();
+                pdfRenderer.close();
+                parcelFileDescriptor.close();
+                tempPdfFile.delete(); // ลบไฟล์ชั่วคราว
+
+                Log.d(TAG, "PDF converted to bitmap: " + originalWidth + "x" + originalHeight);
+
+                // ✅ 4. Resize เหมือน printImageFromBytes เป๊ะๆ (ส่วนนี้คือกุญแจสำคัญ!)
+                float aspectRatio = (float) originalBitmap.getWidth() / originalBitmap.getHeight();
+                int targetWidth = 500;
+                int targetHeight = (int) (targetWidth / aspectRatio * 0.4f);
+                
+                Bitmap resizedBitmap = Bitmap.createScaledBitmap(
+                    originalBitmap, targetWidth, targetHeight, true);
+                originalBitmap.recycle();
+
+                Log.d(TAG, "Resized bitmap to: " + targetWidth + "x" + targetHeight);
+
+                // ✅ 5. Convert to binary data เหมือน printImageFromBytes เป๊ะๆ
+                int width = resizedBitmap.getWidth();
+                int height = resizedBitmap.getHeight();
+                byte[] binaryData = new byte[width * height];
+                
+                int[] pixels = new int[width * height];
+                resizedBitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+                
+                for (int i = 0; i < pixels.length; i++) {
+                    int luminance = (Color.red(pixels[i]) + Color.green(pixels[i]) + Color.blue(pixels[i])) / 3;
+                    binaryData[i] = (byte) (luminance < 128 ? 1 : 0);
+                }
+                
+                resizedBitmap.recycle();
+
+                // ✅ 6. Print to serial port เหมือน printImageFromBytes เป๊ะๆ
+                try (FileOutputStream fos = new FileOutputStream(portPath)) {
+                    // Initialize printer
+                    fos.write(new byte[]{0x1B, 0x40, 0x1B, 0x33, 0x00});
+                    fos.flush();
+                    Thread.sleep(250);
+
+                    // Process and send data
+                    byte[] buffer = new byte[512];
+                    int bufferPos = 0;
+                    
+                    for (int y = 0; y < height; y += 8) {
+                        // Left half command
+                        byte[] leftCmd = {0x1B, 0x24, 0x00, 0x00, 0x1B, 0x2A, 0x01, (byte)250, 0};
+                        
+                        if (bufferPos + leftCmd.length + 250 > buffer.length) {
+                            fos.write(buffer, 0, bufferPos);
+                            fos.flush();
+                            bufferPos = 0;
+                            Thread.sleep(50);
+                        }
+                        
+                        System.arraycopy(leftCmd, 0, buffer, bufferPos, leftCmd.length);
+                        bufferPos += leftCmd.length;
+                        
+                        // Process left half (0-249)
+                        for (int x = 0; x < 250; x++) {
+                            byte pixelByte = 0;
+                            for (int bit = 0; bit < 8; bit++) {
+                                int pxY = y + bit;
+                                if (pxY < height && x < width && binaryData[pxY * width + x] == 1) {
+                                    pixelByte |= (1 << (7 - bit));
+                                }
+                            }
+                            buffer[bufferPos++] = pixelByte;
+                        }
+                        
+                        // Right half command
+                        byte[] rightCmd = {0x1B, 0x24, (byte)250, 0x00, 0x1B, 0x2A, 0x01, (byte)250, 0};
+                        
+                        if (bufferPos + rightCmd.length + 250 + 1 > buffer.length) {
+                            fos.write(buffer, 0, bufferPos);
+                            fos.flush();
+                            bufferPos = 0;
+                            Thread.sleep(50);
+                        }
+                        
+                        System.arraycopy(rightCmd, 0, buffer, bufferPos, rightCmd.length);
+                        bufferPos += rightCmd.length;
+                        
+                        // Process right half (250-499)
+                        for (int x = 250; x < 500 && x < width; x++) {
+                            byte pixelByte = 0;
+                            for (int bit = 0; bit < 8; bit++) {
+                                int pxY = y + bit;
+                                if (pxY < height && binaryData[pxY * width + x] == 1) {
+                                    pixelByte |= (1 << (7 - bit));
+                                }
+                            }
+                            buffer[bufferPos++] = pixelByte;
+                        }
+                        
+                        buffer[bufferPos++] = 0x0A; // Line feed
+                    }
+                    
+                    // Send remaining data
+                    if (bufferPos > 0) {
+                        fos.write(buffer, 0, bufferPos);
+                        fos.flush();
+                    }
+                    
+                    // Final commands
+                    Thread.sleep(60);
+                    fos.write(new byte[]{0x1B, 0x33, 0x18, 0x1B, 0x40});
+                    fos.flush();
+                    
+                    result.success("PDF printed successfully as image!");
+                    
+                } catch (IOException e) {
+                    result.error("PRINT_ERROR", "Print failed: " + e.getMessage(), null);
+                }
+
+            } catch (Exception e) {
+                Log.e(TAG, "Error printing PDF as image: " + e.getMessage());
+                result.error("PDF_PRINT_ERROR", "Failed to print PDF: " + e.getMessage(), null);
+            }
+        }).start();
     }
 }

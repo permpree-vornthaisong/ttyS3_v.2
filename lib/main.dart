@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:image/image.dart' as img;
+import 'package:unit_test_java_tty/logic_imageprint.dart';
 
 void main() => runApp(const MyApp());
 
@@ -24,116 +24,85 @@ class _MyHomePageState extends State<MyHomePage> {
   final _channel = const MethodChannel('com.example.unittest/printer');
   bool _isPrinting = false;
   String _status = 'Ready';
+  final logic = ImagePrintLogic();
 
-  // Printer configuration
-  static const String PORT_PATH = '/dev/ttyS3';
-  static const int PRINTER_WIDTH = 500; // 50mm printer in dots
+  final jsonData = {
+    'title': 'ใบเสร็จรับเงิน', // ✅ เปลี่ยนเป็นไทย
+    'date': '04/06/2025',
+    'items': [
+      {'name': 'กาแฟ', 'price': 50.0},
+      {'name': 'ขนม', 'price': 25.0},
+    ]
+  };
 
-  // ESC/POS Commands
-  static const List<int> ESC_INIT = [0x1B, 0x40];
-  static const List<int> ESC_ALIGN_CENTER = [0x1B, 0x61, 0x01];
-  static const List<int> ESC_ALIGN_LEFT = [0x1B, 0x61, 0x00];
-  static const List<int> ESC_FEED_3 = [0x1B, 0x64, 0x03];
-  static const List<int> SWAP_INT_COLOR = [1, 0];
-
-  Future<void> _printLargeImage() async {
+  Future<void> _printSingleImage() async {
     setState(() {
       _isPrinting = true;
-      _status = 'Loading image from Dart...';
+      _status = 'Creating single image...';
     });
 
     try {
-      // 1. Load image data ใน Dart
-      final ByteData data = await rootBundle.load('assets/page_1x.png');
-      final Uint8List imageBytes = data.buffer.asUint8List();
+      print('🔍 DEBUG: Starting single image creation...');
 
-      setState(() => _status = 'Sending image data to Java...');
+      // 1. สร้างรูปภาพเดียว
+      final Uint8List? imageBytes = await logic.createReceiptImage(jsonData);
 
-      // 2. ส่งข้อมูลรูปภาพไปให้ Java
+      if (imageBytes == null) {
+        throw Exception('Failed to create image');
+      }
+
+      print('🔍 DEBUG: Single image created, size: ${imageBytes.length} bytes');
+
+      setState(() => _status = 'Sending to printer...');
+
+      // 2. ส่งไปพิมพ์
       final result = await _channel.invokeMethod('printImageFromBytes', {
-        'imageData': imageBytes, // ส่งข้อมูลรูปภาพจริง
+        'imageData': imageBytes,
         'portPath': '/dev/ttyS3',
       });
 
-      setState(() => _status = result.toString());
+      setState(() => _status = 'Print result: $result');
     } catch (e) {
+      print('🔴 ERROR: $e');
       setState(() => _status = 'Error: $e');
     } finally {
       setState(() => _isPrinting = false);
     }
   }
 
-  Future<void> _printTestPattern() async {
+  // ✅ แก้ไข method นี้ - ลบ paperWidth parameter
+  Future<void> _printWithPDFConversion() async {
     setState(() {
       _isPrinting = true;
-      _status = 'Printing test...';
+      _status = 'Creating PDF...';
     });
 
     try {
-      List<int> commands = [];
+      print('🔍 DEBUG: Starting PDF creation...');
 
-      // Simple test pattern
-      commands.addAll(ESC_INIT);
-      commands.addAll(ESC_ALIGN_CENTER);
-      commands.addAll('=== TEST PRINT ===\n'.codeUnits);
-      commands.addAll(ESC_ALIGN_LEFT);
-      commands.addAll('Printer Width: $PRINTER_WIDTH dots\n'.codeUnits);
-      commands.addAll('Port: $PORT_PATH\n'.codeUnits);
-      commands.addAll(ESC_FEED_3);
+      // 1. สร้าง PDF ใน Dart
+      final Uint8List? pdfBytes = await logic.createReceiptPDF(jsonData);
 
-      await _channel.invokeMethod('printBytes', {
-        'portPath': PORT_PATH,
-        'data': Uint8List.fromList(commands),
+      if (pdfBytes == null) {
+        throw Exception('Failed to create PDF');
+      }
+
+      print('🔍 DEBUG: PDF created, size: ${pdfBytes.length} bytes');
+
+      setState(() => _status = 'Converting PDF to image in Java...');
+
+      // 2. ส่ง PDF ไป Java แปลงเป็นรูปและพิมพ์ (ไม่ส่ง paperWidth)
+      final result = await _channel.invokeMethod('printPdfAsImage', {
+        'pdfData': pdfBytes, // ✅ ส่ง PDF bytes
+        'portPath': '/dev/ttyS3',
+        'dpi': 150, // ✅ กำหนด DPI
+        // ❌ ลบ 'paperWidth' ออก - ให้ Java ใช้ขนาดจริงของ PDF
       });
 
-      setState(() => _status = 'Test completed!');
+      setState(() => _status = 'Print result: $result');
     } catch (e) {
+      print('🔴 ERROR: $e');
       setState(() => _status = 'Error: $e');
-    } finally {
-      setState(() => _isPrinting = false);
-    }
-  }
-
-  Future<void> _printCustom() async {
-    setState(() {
-      _isPrinting = true;
-      _status = 'Sending custom data...';
-    });
-
-    try {
-      // Example: Send raw hex data
-      List<int> customData = [
-        0x1B, 0x40, // ESC @
-        // Add your custom commands here
-        0x48, 0x65, 0x6C, 0x6C, 0x6F, // "Hello"
-        0x0A, // LF
-        0x1B, 0x64, 0x03, // Feed 3 lines
-      ];
-
-      await _channel.invokeMethod('printBytes', {
-        'portPath': PORT_PATH,
-        'data': Uint8List.fromList(customData),
-      });
-
-      setState(() => _status = 'Custom data sent!');
-    } catch (e) {
-      setState(() => _status = 'Error: $e');
-    } finally {
-      setState(() => _isPrinting = false);
-    }
-  }
-
-  Future<void> _sendStartIgnoreProtocol() async {
-    setState(() {
-      _isPrinting = true;
-      _status = 'Sending START_ignore_protocol...';
-    });
-
-    try {
-      final result = await _channel.invokeMethod('sendStartIgnoreProtocol');
-      setState(() => _status = result);
-    } catch (e) {
-      setState(() => _status = 'Protocol Error: $e');
     } finally {
       setState(() => _isPrinting = false);
     }
@@ -143,115 +112,37 @@ class _MyHomePageState extends State<MyHomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Simple Printer - Raw Bytes Only'),
-        backgroundColor: Colors.indigo,
+        title: const Text('Print Options'),
+        backgroundColor: Colors.blue,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
+      body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             // Status
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: _isPrinting ? Colors.blue.shade50 : Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (_isPrinting)
-                    const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  const SizedBox(width: 10),
-                  Text(
-                    _status,
-                    style: const TextStyle(fontSize: 16),
-                  ),
-                ],
-              ),
+            Text(
+              _status,
+              style: const TextStyle(fontSize: 16),
+              textAlign: TextAlign.center,
             ),
-
             const SizedBox(height: 40),
 
-            // START_ignore_protocol button
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _isPrinting ? null : _sendStartIgnoreProtocol,
-                icon: const Icon(Icons.send),
-                label: const Text('Send START_ignore_protocol'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
-                  backgroundColor: Colors.orange,
-                ),
-              ),
+            // ✅ เพิ่มปุ่มใหม่
+            ElevatedButton(
+              onPressed: _isPrinting ? null : _printWithPDFConversion,
+              child: _isPrinting
+                  ? const CircularProgressIndicator(color: Colors.white)
+                  : const Text('Print PDF via Java'),
             ),
 
-            const SizedBox(height: 16),
+            const SizedBox(height: 20),
 
-            // Buttons
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _isPrinting ? null : _printTestPattern,
-                icon: const Icon(Icons.text_snippet),
-                label: const Text('Print Test Pattern'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
-                  backgroundColor: Colors.green,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _isPrinting ? null : _printLargeImage,
-                icon: const Icon(Icons.image),
-                label: const Text('Print Logo Image'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
-                  backgroundColor: Colors.blue,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _isPrinting ? null : _printCustom,
-                icon: const Icon(Icons.code),
-                label: const Text('Send Custom Bytes'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
-                  backgroundColor: Colors.purple,
-                ),
-              ),
-            ),
-
-            const Spacer(),
-
-            // Info
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.amber.shade50,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Text(
-                'Port: /dev/ttyS3 | Width: 500 dots | Auto START_ignore_protocol on startup',
-                style: TextStyle(fontSize: 12),
-                textAlign: TextAlign.center,
-              ),
+            // ปุ่มเดิม (Flutter conversion)
+            ElevatedButton(
+              onPressed: _isPrinting ? null : _printSingleImage,
+              child: _isPrinting
+                  ? const CircularProgressIndicator(color: Colors.white)
+                  : const Text('Print via Flutter'),
             ),
           ],
         ),
