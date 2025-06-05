@@ -111,7 +111,21 @@ public class MainActivity extends FlutterActivity {
                                    dpi != null ? dpi : 150, 
                                    result);
                     break;
-
+   // ✅ เพิ่ม case ใหม่
+                case "printPdfAsImageAutoResize":
+                    byte[] pdfDataAuto = call.argument("pdfData");
+                    portPath = call.argument("portPath");
+                    Integer dpiAuto = call.argument("dpi");
+                    
+                    if (pdfDataAuto == null || portPath == null) {
+                        result.error("INVALID_ARGUMENTS", "PDF data and port path required", null);
+                        return;
+                    }
+                    
+                    printPdfAsImageAutoResize(pdfDataAuto, portPath, 
+                                             dpiAuto != null ? dpiAuto : 150, 
+                                             result);
+                    break;
                 default:
                     result.notImplemented();
                     break;
@@ -579,4 +593,192 @@ public class MainActivity extends FlutterActivity {
             }
         }).start();
     }
+private void printPdfAsImageAutoResize(byte[] pdfData, String portPath, int dpi, MethodChannel.Result result) {
+    new Thread(() -> {
+        try {
+            // 1-3. เหมือนเดิม (สร้าง PDF, render bitmap)
+            File tempPdfFile = new File(getCacheDir(), "temp_receipt.pdf");
+            try (FileOutputStream fos = new FileOutputStream(tempPdfFile)) {
+                fos.write(pdfData);
+                fos.flush();
+            }
+
+            ParcelFileDescriptor parcelFileDescriptor = ParcelFileDescriptor.open(
+                tempPdfFile, ParcelFileDescriptor.MODE_READ_ONLY);
+            PdfRenderer pdfRenderer = new PdfRenderer(parcelFileDescriptor);
+
+            if (pdfRenderer.getPageCount() == 0) {
+                result.error("PDF_ERROR", "PDF has no pages", null);
+                return;
+            }
+
+            PdfRenderer.Page page = pdfRenderer.openPage(0);
+            
+            float scale = dpi / 72f;
+            int originalWidth = (int) (page.getWidth() * scale);
+            int originalHeight = (int) (page.getHeight() * scale);
+
+            Bitmap originalBitmap = Bitmap.createBitmap(originalWidth, originalHeight, Bitmap.Config.ARGB_8888);
+            originalBitmap.eraseColor(Color.WHITE);
+            
+            page.render(originalBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT);
+            
+            page.close();
+            pdfRenderer.close();
+            parcelFileDescriptor.close();
+            tempPdfFile.delete();
+
+            Log.d(TAG, "PDF converted to bitmap: " + originalWidth + "x" + originalHeight);
+
+            // 4. Auto Resize Logic - เหมือนเดิม
+            Bitmap finalBitmap;
+            int width, height;
+            
+            if (originalWidth <= 500) {
+                finalBitmap = originalBitmap;
+                width = originalWidth;
+                height = originalHeight;
+                Log.d(TAG, "Using original size (Auto): " + width + "x" + height);
+            } else {
+                float aspectRatio = (float) originalBitmap.getWidth() / originalBitmap.getHeight();
+                int targetWidth = 500;
+                int targetHeight = (int) (targetWidth / aspectRatio);
+                
+                finalBitmap = Bitmap.createScaledBitmap(
+                    originalBitmap, targetWidth, targetHeight, true);
+                originalBitmap.recycle();
+                
+                width = targetWidth;
+                height = targetHeight;
+                Log.d(TAG, "Auto-resized to: " + width + "x" + height);
+            }
+
+            // 5. Convert to binary data - เหมือนเดิม
+            byte[] binaryData = new byte[width * height];
+            
+            int[] pixels = new int[width * height];
+            finalBitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+            
+            for (int i = 0; i < pixels.length; i++) {
+                int luminance = (Color.red(pixels[i]) + Color.green(pixels[i]) + Color.blue(pixels[i])) / 3;
+                binaryData[i] = (byte) (luminance < 128 ? 1 : 0);
+            }
+            
+            finalBitmap.recycle();
+
+            // ✅ 6. แก้ไข Print Logic ให้จัดกึ่งกลางถูกต้อง
+            try (FileOutputStream fos = new FileOutputStream(portPath)) {
+                // Initialize printer
+                fos.write(new byte[]{0x1B, 0x40, 0x1B, 0x33, 0x00});
+                fos.flush();
+                Thread.sleep(250);
+
+                byte[] buffer = new byte[512];
+                int bufferPos = 0;
+                
+                for (int y = 0; y < height; y += 8) {
+                    
+                    if (width <= 500) {
+                        // ✅ สำหรับ PDF ทุกขนาด ให้จัดกึ่งกลางใน 500px
+                        
+                        // คำนวณตำแหน่งเริ่มต้นให้อยู่กึ่งกลาง
+                        int totalPrinterWidth = 500; // ความกว้างเต็มของเครื่องพิมพ์
+                        int startOffset = (totalPrinterWidth - width) / 2;
+                        
+                        Log.d(TAG, "Centering: width=" + width + ", offset=" + startOffset);
+                        
+                        // แบ่งเป็น 2 ส่วน: Left half และ Right half
+                        
+                        // === LEFT HALF (0-249) ===
+                        int leftWidth = Math.min(250 - startOffset, width);
+                        if (leftWidth > 0 && startOffset < 250) {
+                            int leftOffset = Math.max(0, startOffset);
+                            
+                            byte[] leftCmd = {0x1B, 0x24, (byte)(leftOffset & 0xFF), (byte)((leftOffset >> 8) & 0xFF), 
+                                            0x1B, 0x2A, 0x01, (byte)leftWidth, 0};
+                            
+                            if (bufferPos + leftCmd.length + leftWidth > buffer.length) {
+                                fos.write(buffer, 0, bufferPos);
+                                fos.flush();
+                                bufferPos = 0;
+                                Thread.sleep(50);
+                            }
+                            
+                            System.arraycopy(leftCmd, 0, buffer, bufferPos, leftCmd.length);
+                            bufferPos += leftCmd.length;
+                            
+                            // ส่งข้อมูล pixel สำหรับ left half
+                            int sourceStartX = Math.max(0, startOffset < 0 ? -startOffset : 0);
+                            for (int i = 0; i < leftWidth; i++) {
+                                byte pixelByte = 0;
+                                for (int bit = 0; bit < 8; bit++) {
+                                    int pxY = y + bit;
+                                    int pxX = sourceStartX + i;
+                                    if (pxY < height && pxX < width && binaryData[pxY * width + pxX] == 1) {
+                                        pixelByte |= (1 << (7 - bit));
+                                    }
+                                }
+                                buffer[bufferPos++] = pixelByte;
+                            }
+                        }
+                        
+                        // === RIGHT HALF (250-499) ===
+                        int rightStartX = Math.max(0, 250 - startOffset); // ตำแหน่งเริ่มต้นใน source image
+                        int rightWidth = Math.min(250, width - rightStartX);
+                        
+                        if (rightWidth > 0 && rightStartX < width) {
+                            byte[] rightCmd = {0x1B, 0x24, (byte)250, 0x00, 
+                                             0x1B, 0x2A, 0x01, (byte)rightWidth, 0};
+                            
+                            if (bufferPos + rightCmd.length + rightWidth + 1 > buffer.length) {
+                                fos.write(buffer, 0, bufferPos);
+                                fos.flush();
+                                bufferPos = 0;
+                                Thread.sleep(50);
+                            }
+                            
+                            System.arraycopy(rightCmd, 0, buffer, bufferPos, rightCmd.length);
+                            bufferPos += rightCmd.length;
+                            
+                            // ส่งข้อมูล pixel สำหรับ right half
+                            for (int i = 0; i < rightWidth; i++) {
+                                byte pixelByte = 0;
+                                for (int bit = 0; bit < 8; bit++) {
+                                    int pxY = y + bit;
+                                    int pxX = rightStartX + i;
+                                    if (pxY < height && pxX < width && binaryData[pxY * width + pxX] == 1) {
+                                        pixelByte |= (1 << (7 - bit));
+                                    }
+                                }
+                                buffer[bufferPos++] = pixelByte;
+                            }
+                        }
+                        
+                        buffer[bufferPos++] = 0x0A; // Line feed
+                    }
+                }
+                
+                // Send remaining data
+                if (bufferPos > 0) {
+                    fos.write(buffer, 0, bufferPos);
+                    fos.flush();
+                }
+                
+                // Final commands
+                Thread.sleep(60);
+                fos.write(new byte[]{0x1B, 0x33, 0x18, 0x1B, 0x40});
+                fos.flush();
+                
+                result.success("PDF printed successfully with auto-resize and centering!");
+                
+            } catch (IOException e) {
+                result.error("PRINT_ERROR", "Print failed: " + e.getMessage(), null);
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error printing PDF with auto-resize: " + e.getMessage());
+            result.error("PDF_PRINT_ERROR", "Failed to print PDF: " + e.getMessage(), null);
+        }
+    }).start();
+}
 }

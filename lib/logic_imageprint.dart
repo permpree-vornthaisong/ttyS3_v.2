@@ -80,10 +80,13 @@ class ImagePrintLogic extends ChangeNotifier {
 
       // คำนวณความสูงตามจำนวนรายการ
       final itemHeight = 30.0;
+      final logoHeight = 80.0; // ✅ เพิ่มพื้นที่สำหรับโลโก้
       final headerHeight = 150.0;
       final footerHeight = 100.0;
-      final totalHeight =
-          headerHeight + (items.length * itemHeight + 600) + footerHeight;
+      final totalHeight = logoHeight +
+          headerHeight +
+          (items.length * itemHeight + 200) +
+          footerHeight; // ✅ แก้ไข: เพิ่ม logoHeight
 
       // กำหนดขนาดหน้ากระดาษแบบไดนามิก
       document.pageSettings.size = Size(pageWidth, totalHeight);
@@ -95,6 +98,12 @@ class ImagePrintLogic extends ChangeNotifier {
 
       final page = document.pages.add();
 
+      // ✅ แก้ไข: วาดพื้นหลังสีขาวก่อนวาดอื่นๆ
+      page.graphics.drawRectangle(
+        brush: PdfSolidBrush(PdfColor(255, 255, 255)),
+        bounds: Rect.fromLTWH(0, 0, pageWidth, totalHeight),
+      );
+
       // ✅ โหลด Thai font เหมือน pdf_state.dart
       final fontData = await rootBundle.load('assets/fonts/ZoodRangmah3.1.ttf');
       final thaiFont = PdfTrueTypeFont(fontData.buffer.asUint8List(), 14);
@@ -102,11 +111,33 @@ class ImagePrintLogic extends ChangeNotifier {
 
       double y = 0;
 
-      // ✅ เพิ่มพื้นหลังสีขาว
-      page.graphics.drawRectangle(
-        brush: PdfSolidBrush(PdfColor(255, 255, 255)),
-        bounds: Rect.fromLTWH(0, 0, pageWidth, totalHeight),
-      );
+      // ✅ เพิ่มโลโก้ที่ส่วนบน (พร้อม error handling)
+      try {
+        final logoData = await rootBundle.load('assets/LOGOq.jpg');
+        final logoImage = PdfBitmap(logoData.buffer.asUint8List());
+
+        // คำนวณขนาดโลโก้ให้พอดีกับความกว้างของหน้า
+        final logoDisplayWidth = pageWidth * 0.6; // ใช้ 60% ของความกว้างหน้า
+        final logoAspectRatio = logoImage.width / logoImage.height;
+        final logoDisplayHeight = logoDisplayWidth / logoAspectRatio;
+
+        // วางโลโก้ตรงกลาง
+        final logoX = (pageWidth - logoDisplayWidth) / 2;
+
+        page.graphics.drawImage(
+          logoImage,
+          Rect.fromLTWH(
+              pageWidth / 2 - 100, y, logoDisplayWidth, logoDisplayHeight),
+        );
+
+        y += logoDisplayHeight + 20; // เพิ่มช่องว่างหลังโลโก้
+
+        print('✅ Logo added successfully');
+      } catch (e) {
+        print('❌ Failed to load logo: $e');
+        // ถ้าโหลดโลโก้ไม่ได้ ให้ข้ามไป
+        y += 20; // เพิ่มช่องว่างเล็กน้อย
+      }
 
       // วาดส่วนหัว
       final title = jsonData['title']?.toString() ?? 'ใบเสร็จรับเงิน';
@@ -187,10 +218,10 @@ class ImagePrintLogic extends ChangeNotifier {
       );
 
       _pdfBytes = Uint8List.fromList(document.saveSync());
-      _message = 'สร้าง PDF สำเร็จ';
+      _message = 'สร้าง PDF พร้อมโลโก้สำเร็จ';
       document.dispose();
 
-      _updateState('สร้าง PDF สำเร็จ');
+      _updateState('สร้าง PDF พร้อมโลโก้สำเร็จ');
     } catch (e) {
       _message = 'เกิดข้อผิดพลาดในการสร้าง PDF: $e';
       _updateState('เกิดข้อผิดพลาด: $e');

@@ -78,39 +78,6 @@ class _MyHomePageState extends State<MyHomePage> {
     });
 
     try {
-      print('🔍 DEBUG: Starting print image from file...');
-
-      // 🎯 1. โหลดรูปจากไฟล์เป็น bytes ก่อน
-      setState(() => _status = 'Loading image from assets...');
-
-      final ByteData data = await rootBundle.load('assets/LOGOq.jpg');
-      final Uint8List imageBytes = data.buffer.asUint8List();
-
-      print('✅ Image loaded, size: ${imageBytes.length} bytes');
-
-      // 2. ส่ง bytes ไปพิมพ์ (ไม่ใช่ path)
-      setState(() => _status = 'Sending image bytes to printer...');
-
-      bool imageSuccess = await logic.printImageBytes(
-        imageBytes: imageBytes,
-        portPath: '/dev/ttyS3',
-        method: 'printImageFromBytes',
-      );
-
-      if (!imageSuccess) {
-        throw Exception('Failed to print image from file');
-      }
-
-      print('✅ Image from file printed successfully');
-      setState(() => _status = 'Image printed! Now creating PDF...');
-
-      // เดี๋ยวสักครู่ก่อนทำต่อ
-      await Future.delayed(Duration(seconds: 2));
-
-      // 🎯 2. จากนั้นค่อยสร้าง PDF และพิมพ์ผ่าน Java
-      print('🔍 DEBUG: Starting PDF creation...');
-      setState(() => _status = 'Creating PDF...');
-
       final Uint8List? pdfBytes = await logic.createReceiptPDF(jsonData);
 
       if (pdfBytes == null) {
